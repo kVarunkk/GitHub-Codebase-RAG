@@ -5,12 +5,6 @@ from contextlib import asynccontextmanager
 from core.clients import ensure_collection
 from api.routes.index import router as index_router
 from api.routes.query import router as query_router
-import deepeval
-import os
-
-confident_api_key = os.getenv("CONFIDENT_API_KEY")
-if confident_api_key:
-    deepeval.login(api_key=confident_api_key)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

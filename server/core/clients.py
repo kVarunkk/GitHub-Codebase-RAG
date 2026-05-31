@@ -10,7 +10,12 @@ from sentence_transformers import SentenceTransformer,CrossEncoder
 import os
 from constants import COLLECTION_NAME, VECTOR_DIM
 from google import genai
+import deepeval
 
+# --- Deepeval setup for tracing---
+confident_api_key = os.getenv("CONFIDENT_API_KEY")
+if confident_api_key:
+    deepeval.login(api_key=confident_api_key)
 
 # --- Qdrant ---
 qdrant = AsyncQdrantClient(
