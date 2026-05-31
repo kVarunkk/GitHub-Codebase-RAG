@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+qdrant-client[fastembed]
+sentence-transformers
+fastembed
+tree-sitter
+tree-sitter-language-pack
+google-genai
+python-dotenv
+httpx
+deepeval
