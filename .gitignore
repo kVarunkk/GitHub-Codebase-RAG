@@ -5,6 +5,7 @@ server/**/__pycache__/
 **/*.pyc
 **/*.pyo
 server/.env
+server/.deepeval
 
 # Node
 client/node_modules/

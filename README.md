@@ -83,8 +83,9 @@ gh-rag-app/
 │   └── api/
 │       ├── models.py         # Pydantic request/response models
 │       └── routes/
-│           ├── index.py      # POST /api/index, GET /api/index/{job_id}
+│           ├── index.py      # POST /api/index, GET /api/index/{job_id}, DELETE /api/index
 │           └── query.py      # POST /api/query
+            └── evaluate.py   # POST /api/evaluate
 └── client/                   # Next.js frontend (coming soon)
 ```
 
@@ -182,6 +183,27 @@ Start indexing a GitHub repository.
 
 ---
 
+### `DELETE /api/index`
+
+Delete all indexed vectors for a specific repo.
+
+**Query param:** `repo=owner/repo`
+
+```bash
+curl -X DELETE "http://localhost:8000/api/index?repo=kVarunkk/GetHired-mcp-server"
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Deleted all points for kVarunkk/GetHired-mcp-server"
+}
+```
+
+---
+
 ### `GET /api/index/{job_id}`
 
 Poll indexing status.
@@ -192,7 +214,14 @@ Poll indexing status.
 {
   "job_id": "uuid",
   "status": "done",
-  "message": "Successfully indexed owner/repo"
+  "message": "Successfully indexed owner/repo",
+  "progress": {
+    "total_files": 5,
+    "fetched_files": 4,
+    "chunked_files": 4,
+    "embedded_chunks": 20,
+    "stored_chunks": 20
+  }
 }
 ```
 
@@ -229,6 +258,46 @@ Ask a question about an indexed repository.
   ]
 }
 ```
+
+---
+
+### `POST /api/evaluate`
+
+Run RAG evaluation metrics on a question against an indexed repo. Slower than `/api/query` — intended for testing pipeline quality, not production use.
+
+**Request:**
+
+```json
+{
+  "question": "How does authentication work?",
+  "repo": "owner/repo",
+  "expected_answer": "optional ground truth for precision/recall metrics",
+  "candidate_k": 20,
+  "final_k": 5
+}
+```
+
+**Response:**
+
+```json
+{
+  "question": "How does authentication work?",
+  "answer": "Authentication uses bearer tokens...",
+  "passed": true,
+  "metrics": [
+    {
+      "name": "Answer Relevancy",
+      "score": 0.95,
+      "threshold": 0.7,
+      "passed": true,
+      "reason": "The answer directly addresses the question."
+    }
+  ],
+  "confident_link": "https://app.confident-ai.com/..."
+}
+```
+
+> Note: `ContextualPrecision` and `ContextualRecall` are only evaluated when `expected_answer` is provided.
 
 ---
 
