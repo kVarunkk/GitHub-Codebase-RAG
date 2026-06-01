@@ -24,5 +24,4 @@ async def ask(question: str, repo: str, candidate_k: int = 20, final_k: int = 5)
     reranked = await rerank_async(question, results, top_k=final_k)
     context = build_context(reranked)
     response_text = await generate(question, context)
-
     return response_text, reranked  

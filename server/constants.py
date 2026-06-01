@@ -3,7 +3,7 @@ EXTENSION_TO_LANGUAGE = {
     ".ts": "typescript",
     ".tsx": "tsx",
     ".js": "javascript",
-    ".jsx": "jsx",
+    ".jsx": "javascript",
     ".go": "go",
     ".rs": "rust",
     ".java": "java",

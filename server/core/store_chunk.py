@@ -3,7 +3,7 @@ from qdrant_client.models import PointStruct, SparseVector
 from core.clients import qdrant
 from constants import COLLECTION_NAME
 
-async def store_chunks(chunks: list, repo: str):
+async def store_chunks(chunks: list, repo: str, progress_callback=None):
     points = [
         PointStruct(
             id=str(uuid.uuid4()),
@@ -26,9 +26,12 @@ async def store_chunks(chunks: list, repo: str):
     ]
 
     batch_size = 100
+    stored = 0
     for i in range(0, len(points), batch_size):
         batch = points[i:i + batch_size]
         await qdrant.upsert(collection_name=COLLECTION_NAME, points=batch)
-        print(f"  uploaded {min(i + batch_size, len(points))}/{len(points)}")
+        stored+=len(batch)
+        if progress_callback:
+            progress_callback(uploaded_chunks=stored)
 
     print("[indexer] Done.")

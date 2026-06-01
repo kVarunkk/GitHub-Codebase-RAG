@@ -40,11 +40,14 @@ async def fetch_file_content(client: httpx.AsyncClient, file_url: str) -> str | 
     return base64.b64decode(data["content"]).decode("utf-8", errors="ignore")
 
 
-async def fetch_all_code_files(owner: str, repo: str, branch: str = "main") -> list:
+async def fetch_all_code_files(owner: str, repo: str, branch: str = "main", progress_callback=None) -> list:
     async with httpx.AsyncClient(timeout=30) as client:
         tree = await get_repo_tree(client, owner, repo, branch)
         code_files = filter_code_files(tree)
         print(f"Found {len(code_files)} code files")
+
+        if progress_callback:
+            progress_callback(total_files=len(code_files), fetched_files=0)
 
         results = []
         for file in code_files:
@@ -54,31 +57,41 @@ async def fetch_all_code_files(owner: str, repo: str, branch: str = "main") -> l
                     "path": file["path"],
                     "content": content,
                 })
+            if progress_callback:
+                progress_callback(fetched_files=len(results))
+                
             await asyncio.sleep(1)
 
         print(f"Fetched {len(results)} files")
         return results
     
 
-async def run_indexing_pipeline(owner: str, repo: str, branch: str = "main"):
+async def run_indexing_pipeline(owner: str, repo: str, branch: str = "main", progress_callback=None):
     repo_full = f"{owner}/{repo}"
     print(f"[indexer] Starting: {repo_full} ({branch})")
 
-    # I/O bound — async
-    files = await fetch_all_code_files(owner, repo, branch)
+    # I/O bound
+    files = await fetch_all_code_files(owner, repo, branch, progress_callback=progress_callback)
     print(f"[indexer] Fetched {len(files)} files")
 
-    # CPU bound — run in threadpool so event loop isn't blocked
+    # CPU bound — run in threadpool 
     loop = asyncio.get_event_loop()
     chunks = await loop.run_in_executor(None, chunk_all_files, files)
     print(f"[indexer] Created {len(chunks)} chunks")
 
-    # CPU bound — already uses ThreadPoolExecutor internally
-    # but still wrap so the await keeps things non-blocking
+    # update chunked files
+    if progress_callback:
+        progress_callback(chunked_files=len(files))
+
+    # CPU bound
     chunks = await loop.run_in_executor(None, embed_chunks, chunks)
     print(f"[indexer] Embedded {len(chunks)} chunks")
 
-    # I/O bound — async
-    await store_chunks(chunks, repo_full)
+    # update embedded chunks
+    if progress_callback:
+        progress_callback(embedded_chunks=len(chunks))
+
+    # I/O bound
+    await store_chunks(chunks, repo_full, progress_callback=progress_callback)
 
      

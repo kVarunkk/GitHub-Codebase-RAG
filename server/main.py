@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from core.clients import ensure_collection
 from api.routes.index import router as index_router
 from api.routes.query import router as query_router
+from api.routes.evaluate import router as evaluate_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,6 +20,7 @@ app = FastAPI(
 
 app.include_router(index_router, prefix="/api")
 app.include_router(query_router, prefix="/api")
+app.include_router(evaluate_router, prefix="/api")
 
 @app.get("/health")
 async def health():
