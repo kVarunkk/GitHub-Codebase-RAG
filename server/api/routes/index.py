@@ -1,15 +1,12 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 from api.models import IndexProgress, IndexRequest, IndexStatus, IndexStatusResponse
-from core.indexer import run_indexing_pipeline
 import uuid
-from core.clients import qdrant
+from core.clients import get_arq_pool, get_qdrant
 from qdrant_client.models import Filter, FieldCondition, MatchValue, FilterSelector
 from constants import COLLECTION_NAME
+from core.database import create_job, get_job
 
 router = APIRouter()
-
-# in memory job store
-jobs: dict[str, dict] = {}
 
 def parse_repo_url(repo_url: str) -> tuple[str, str]:
     # "https://github.com/kVarunkk/GetHired" → ("kVarunkk", "GetHired")
@@ -18,61 +15,48 @@ def parse_repo_url(repo_url: str) -> tuple[str, str]:
         raise ValueError(f"Invalid GitHub URL: {repo_url}")
     return parts[-2], parts[-1]
 
-async def indexing_task(job_id: str, owner: str, repo: str, branch: str):
-    jobs[job_id]["status"] = IndexStatus.RUNNING
-
-    def update_progress(**kwargs):
-        for key, value in kwargs.items():
-            jobs[job_id]["progress"][key] = value
-
-    try:
-        await run_indexing_pipeline(owner, repo, branch, progress_callback=update_progress)
-        jobs[job_id]["status"] = IndexStatus.DONE
-        jobs[job_id]["message"] = f"Successfully indexed {owner}/{repo}"
-    except Exception as e:
-        jobs[job_id]["status"] = IndexStatus.FAILED
-        jobs[job_id]["message"] = str(e)
-        print(f"[indexer] Failed for {owner}/{repo}: {e}")
 
 @router.post("/index", response_model=IndexStatusResponse)
-async def index_repo(body: IndexRequest, background_tasks: BackgroundTasks):
+async def index_repo(body: IndexRequest):
     try:
         owner, repo = parse_repo_url(body.repo_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {
-        "status": IndexStatus.PENDING,
-        "message": f"Queued indexing for {owner}/{repo}",
-        "progress": {
-            "total_files": 0,
-            "fetched_files": 0,
-            "chunked_files": 0,
-            "embedded_chunks": 0,
-            "stored_chunks": 0,
-        }
-    }
 
-    background_tasks.add_task(indexing_task, job_id, owner, repo, body.branch)
+    # save job to DB
+    await create_job(job_id, owner, repo)
+
+    # enqueue task in Redis — ARQ worker picks it up
+    pool = await get_arq_pool()
+    await pool.enqueue_job(
+        "index_repo_task",
+        job_id,
+        owner,
+        repo,
+        body.branch,
+        _job_id=job_id  # use same id in ARQ so it's traceable
+    )
 
     return IndexStatusResponse(
         job_id=job_id,
         status=IndexStatus.PENDING,
-        message=f"Indexing started for {owner}/{repo}"
+        message=f"Indexing queued for {owner}/{repo}"
     )
+
 
 @router.get("/index/{job_id}", response_model=IndexStatusResponse)
 async def get_index_status(job_id: str):
-    if job_id not in jobs:
+    job = await get_job(job_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    job = jobs[job_id]
     return IndexStatusResponse(
         job_id=job_id,
         status=job["status"],
-        message=job["message"],
-        progress=IndexProgress(**job["progress"])
+        message=job.get("message"),
+        progress=IndexProgress(**job["progress"]) if job.get("progress") else None
     )
 
 
@@ -81,7 +65,7 @@ async def get_index_status(job_id: str):
 async def delete_repo_index(repo: str):
     # repo = "kVarunkk/GetHired-mcp-server"
     try:
-        await qdrant.delete(
+        await get_qdrant().delete(
             collection_name=COLLECTION_NAME,
             points_selector=FilterSelector(
                 filter=Filter(

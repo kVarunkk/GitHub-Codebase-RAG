@@ -1,37 +1,31 @@
-from concurrent.futures import ThreadPoolExecutor
-from core.clients import dense_model, sparse_model
+import time
+from core.embedding_client import embed_both
 
-def embed_chunks(chunks: list, batch_size: int = 32) -> list:
-    """
-    Runs dense and sparse embedding in parallel.
-    """
-    def run_dense(chunks):
-        texts = [f"File: {chunk['path']}\n\n{chunk['content']}" for chunk in chunks]
-        print(f"[Dense] Embedding {len(texts)} chunks...")
-        embeddings = dense_model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=True,
-            convert_to_numpy=True
-        )
-        for i, chunk in enumerate(chunks):
-            chunk["embedding"] = embeddings[i].tolist()
-        print(f"[Dense] Done. Dim: {len(chunks[0]['embedding'])}")
+async def process_indexing_batch(chunks, batch_size=50):
+    start = time.perf_counter()
+    all_dense = []
+    all_sparse = []
 
-    def run_sparse(chunks):
-        texts = [f"File: {chunk['path']}\n\n{chunk['content']}" for chunk in chunks]
-        print(f"[Sparse] Embedding {len(texts)} chunks...")
-        sparse_embeddings = list(sparse_model.embed(texts))
-        for i, chunk in enumerate(chunks):
-            chunk["sparse_indices"] = sparse_embeddings[i].indices.tolist()
-            chunk["sparse_values"] = sparse_embeddings[i].values.tolist()
-        print("[Sparse] Done.")
+    total_batches = (len(chunks) + batch_size - 1) // batch_size
+    print(f"[Embedder] Starting {total_batches} batches for {len(chunks)} chunks")
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        dense_future = executor.submit(run_dense, chunks)
-        sparse_future = executor.submit(run_sparse, chunks)
+    for i in range(0, len(chunks), batch_size):
+        batch = chunks[i:i + batch_size]
+        texts = [f"File: {chunk['path']}\n\n{chunk['content']}" for chunk in batch]
+        
+        print(f"[Embedder] Batch {i // batch_size + 1}/{(len(chunks) + batch_size - 1) // batch_size}")
+        result = await embed_both(texts)
 
-        dense_future.result()
-        sparse_future.result()
+        print(f"result length: {len(result['dense'])}, {len(result['sparse'])}")
+        
+        all_dense.extend(result["dense"])
+        all_sparse.extend(result["sparse"])
 
+    for i, chunk in enumerate(chunks):
+        chunk["embedding"] = all_dense[i]
+        chunk["sparse_indices"] = all_sparse[i][0]
+        chunk["sparse_values"] = all_sparse[i][1]
+
+    elapsed = time.perf_counter() - start
+    print(f"\n[indexer] Embedded {len(chunks)} chunks TOTAL TIME: {elapsed:.2f}s\n")
     return chunks

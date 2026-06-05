@@ -1,6 +1,6 @@
 from core.clients import gemini
 from constants import GEMINI_MODEL
-from core.retriever import build_context, rerank_async, query_codebase
+from core.retriever import build_context, query_codebase, rerank
 from deepeval.tracing import observe
 
 @observe()
@@ -21,7 +21,7 @@ Question: {question}"""
 @observe()
 async def ask(question: str, repo: str, candidate_k: int = 20, final_k: int = 5):
     results = await query_codebase(question, repo=repo, top_k=candidate_k )
-    reranked = await rerank_async(question, results, top_k=final_k)
+    reranked = await rerank(question, results, top_k=final_k)
     context = build_context(reranked)
     response_text = await generate(question, context)
     return response_text, reranked  

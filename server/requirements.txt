@@ -1,11 +1,11 @@
 fastapi
 uvicorn[standard]
-qdrant-client[fastembed]
-sentence-transformers
-fastembed
+qdrant-client
 tree-sitter
 tree-sitter-language-pack
 google-genai
 python-dotenv
 httpx
 deepeval
+arq
+redis

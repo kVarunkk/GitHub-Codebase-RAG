@@ -1,0 +1,53 @@
+services:
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  embedding:
+    build: ./embedding_service
+    command: uvicorn main:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    env_file:
+      - ./server/.env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s      # check every 30s
+      timeout: 10s       # wait 10s for response
+      retries: 5
+      start_period: 120s
+
+  api:
+    build: ./server
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./server/.env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5  
+    depends_on:
+      redis:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+
+  worker:
+    build: ./server
+    command: python -u -m arq worker.WorkerSettings
+    env_file:
+      - ./server/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy

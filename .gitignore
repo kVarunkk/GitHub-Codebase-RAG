@@ -6,6 +6,10 @@ server/**/__pycache__/
 **/*.pyo
 server/.env
 server/.deepeval
+/.deepeval
+embedding_service/venv/
+embedding_service/__pycache__/
+embedding_service/**/__pycache__/
 
 # Node
 client/node_modules/

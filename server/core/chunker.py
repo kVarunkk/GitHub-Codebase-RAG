@@ -1,6 +1,7 @@
 from tree_sitter import Parser
 from tree_sitter_language_pack import get_language
 from constants import EXTENSION_TO_LANGUAGE, CHUNK_NODE_TYPES, MAX_CHUNK_LINES
+from core.idempotency_checker import get_file_hash
 
 def get_parser(language_name: str) -> Parser:
     language = get_language(language_name)  
@@ -70,6 +71,9 @@ def chunk_file(path: str, content: str, max_lines: int = MAX_CHUNK_LINES) -> lis
 def chunk_all_files(files: list) -> list:
     all_chunks = []
     for file in files:
+        file_hash = get_file_hash(file["content"])
         chunks = chunk_file(file["path"], file["content"])
+        for chunk in chunks:
+            chunk["file_hash"] = file_hash 
         all_chunks.extend(chunks)
     return all_chunks
