@@ -1,7 +1,7 @@
 import base64
 import asyncio
 import httpx
-from constants import CODE_EXTENSIONS
+from constants import BLOCKED_DIRS, BLOCKED_FILE_PATTERNS, CODE_EXTENSIONS
 from core.chunker import chunk_all_files
 from core.embedder import  process_indexing_batch
 from core.store_chunk import store_chunks
@@ -19,18 +19,23 @@ async def get_repo_tree(client: httpx.AsyncClient, owner: str, repo: str, branch
     response.raise_for_status()
     return response.json()
 
-
 def filter_code_files(tree: dict) -> list:
     files = []
     for item in tree["tree"]:
         if item["type"] != "blob":
             continue
         path = item["path"]
+        parts = path.split("/")
+        if any(part in BLOCKED_DIRS for part in parts):
+            continue
+        if any(pattern in path for pattern in BLOCKED_FILE_PATTERNS):
+            continue
+        if item.get("size", 0) > 500_000:  # 500KB
+            continue
         ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
         if ext in CODE_EXTENSIONS:
             files.append(item)
     return files
-
 
 async def fetch_file_content(client: httpx.AsyncClient, file_url: str, semaphore: asyncio.Semaphore) -> str | None:
     async with semaphore:
@@ -55,7 +60,6 @@ async def fetch_file_content(client: httpx.AsyncClient, file_url: str, semaphore
         return None
 
 async def fetch_all_code_files(owner: str, repo: str, branch: str = "main", progress_callback=None) -> list:
-    # Limits maximum parallel requests to 20. Safe for GitHub secondary limits.
     MAX_CONCURRENT_REQUESTS = 20
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     
@@ -97,11 +101,9 @@ async def run_indexing_pipeline(owner: str, repo: str, branch: str = "main", pro
     files = await fetch_all_code_files(owner, repo, branch, progress_callback=progress_callback)
     print(f"[indexer] Fetched {len(files)} files")
 
-    # diff against existing index
     files_to_index, paths_to_delete = await diff_files(files, repo_full)
     print(f"[indexer] {len(files_to_index)} changed/new, {len(paths_to_delete)} deleted, {len(files) - len(files_to_index)} unchanged — skipping")
 
-    # delete vectors for changed + deleted files
     changed_paths = [f["path"] for f in files_to_index]
     await delete_vectors_for_paths(repo_full, changed_paths + paths_to_delete)
 
@@ -109,7 +111,6 @@ async def run_indexing_pipeline(owner: str, repo: str, branch: str = "main", pro
         print("[indexer] Nothing to update.")
         return
 
-    # CPU bound
     loop = asyncio.get_event_loop()
     chunks = await loop.run_in_executor(None, chunk_all_files, files_to_index)
     print(f"[indexer] Created {len(chunks)} chunks")
@@ -117,7 +118,6 @@ async def run_indexing_pipeline(owner: str, repo: str, branch: str = "main", pro
     if progress_callback:
         progress_callback(chunked_files=len(files_to_index))
 
-    # CPU bound
     chunks = await process_indexing_batch(chunks)
     print(f"[indexer] Embedded {len(chunks)} chunks")
 

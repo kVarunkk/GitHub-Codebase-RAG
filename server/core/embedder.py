@@ -1,7 +1,7 @@
 import time
 from core.embedding_client import embed_both
 
-async def process_indexing_batch(chunks, batch_size=50):
+async def process_indexing_batch(chunks, batch_size=100):
     start = time.perf_counter()
     all_dense = []
     all_sparse = []

@@ -2,7 +2,7 @@
 
 A production-grade **Retrieval-Augmented Generation (RAG)** system that lets you ask questions about any GitHub repository and get accurate answers with file and line number citations.
 
-Built as a portfolio project to demonstrate AI engineering, Python backend development, and production RAG pipeline design.
+> **Repo:** [github.com/kVarunkk/GitHub-Codebase-RAG](https://github.com/kVarunkk/GitHub-Codebase-RAG)
 
 ---
 
@@ -10,56 +10,102 @@ Built as a portfolio project to demonstrate AI engineering, Python backend devel
 
 1. Paste a GitHub repo URL — the app fetches all code files via the GitHub API
 2. Files are parsed using **tree-sitter** (AST-aware chunking by function/class boundaries)
-3. Each chunk is embedded using both **dense** (semantic) and **sparse** (keyword) vectors
-4. Vectors are stored in **Qdrant** with repo-level isolation
-5. When you ask a question, hybrid search retrieves the most relevant chunks
-6. A **cross-encoder re-ranker** re-scores the results for precision
-7. **Gemini** generates an answer grounded strictly in the retrieved chunks, with citations
+3. Each chunk is embedded using both **dense** (semantic) and **sparse** (BM42 keyword) vectors
+4. Vectors are stored in **Qdrant Cloud** with repo-level tenant isolation
+5. When you ask a question, hybrid search (RRF fusion) retrieves the most relevant chunks
+6. A **cross-encoder re-ranker** re-scores results for precision
+7. **Gemini** generates an answer grounded strictly in retrieved chunks, with file + line citations
+
+---
+
+## Architecture
+
+```
+Client (curl / API)
+        │
+        ▼
+┌───────────────────┐
+│   FastAPI Server  │  handles HTTP, query, evaluate
+│   (api service)   │
+└────────┬──────────┘
+         │ enqueue job
+         ▼
+┌───────────────────┐
+│      Redis        │  job queue + job state storage
+└────────┬──────────┘
+         │ poll + dequeue
+         ▼
+┌───────────────────┐
+│   ARQ Worker      │  runs indexing pipeline
+│ (worker service)  │
+└────────┬──────────┘
+         │ HTTP (embed/rerank)
+         ▼
+┌───────────────────┐
+│ Embedding Service │  dense + sparse embeddings, reranking
+│ (embedding svc)   │  models loaded once, shared by all
+└───────────────────┘
+         │
+         ▼
+┌───────────────────┐
+│   Qdrant Cloud    │  vector storage, hybrid search
+└───────────────────┘
+```
 
 ---
 
 ## Features
 
 **AST-aware chunking**
-Uses tree-sitter to split code at function and class boundaries rather than arbitrary line counts. Supports TypeScript, JavaScript, Python, Go, Rust, Java, C, and C++.
+Uses tree-sitter to split code at function and class boundaries. Supports TypeScript, TSX, JavaScript, Python, Go, Rust, Java, C, and C++. Falls back to line-based chunking for unsupported types.
 
 **Hybrid search**
-Combines dense vector search (semantic similarity) with sparse BM42 keyword search, fused via Reciprocal Rank Fusion (RRF). Catches both meaning-level and exact-match queries like function names.
+Combines dense vector search (semantic similarity) with BM42 sparse keyword search, fused via Reciprocal Rank Fusion (RRF). Catches both meaning-level queries and exact matches like function names.
 
 **Cross-encoder re-ranking**
-After retrieval, a `cross-encoder/ms-marco-MiniLM-L-6-v2` model re-scores candidates by reading the question and each chunk together — significantly improving result precision.
+After retrieval, a `cross-encoder/ms-marco-MiniLM-L-6-v2` model re-scores candidates by reading the question and chunk together — significantly improving result precision over vector similarity alone.
 
 **Multi-repo support**
-All repos are indexed in a single Qdrant collection, isolated by a `repo` payload field with a keyword index. Each query is scoped to the repo you specify.
+All repos share one Qdrant collection, isolated by a `repo` payload field with a keyword tenant index. Each query is scoped to the repo you specify.
+
+**Idempotent re-indexing**
+File hashes are stored in Redis per repo. On re-index, only changed or new files are re-embedded. Deleted files are removed from Qdrant. Unchanged files are skipped entirely.
+
+**Microservices architecture**
+Three independent services — API server, ARQ worker, and embedding service. Embedding models are loaded once in the embedding service and shared by both the API (for query-time embedding) and the worker (for indexing). No model duplication across processes.
 
 **Async pipeline**
-Built on FastAPI with full async support. CPU-bound work (embedding, re-ranking) runs in threadpool executors. Network I/O (GitHub API, Qdrant, Gemini) is fully async.
+Built on FastAPI with full async support. CPU-bound work (embedding, reranking) runs in threadpool executors via `asyncio.to_thread`. Network I/O (GitHub API, Qdrant, Gemini, Redis) is fully async.
 
-**Background indexing**
-`POST /api/index` returns immediately with a `job_id`. Indexing runs as a background task. Poll `GET /api/index/{job_id}` for status.
+**Job queue with retries**
+`POST /api/index` returns immediately. Indexing runs as an ARQ background job. Failed jobs retry up to 3 times with exponential backoff. Job state (status, progress) stored in Redis with 24hr TTL.
+
+**Indexing progress tracking**
+Poll `GET /api/index/{job_id}` to get real-time progress — total files, fetched, chunked, embedded, and stored counts.
+
+**RAG evaluation endpoint**
+Dedicated `/api/evaluate` scores pipeline quality using DeepEval — faithfulness, answer relevancy, contextual precision, and contextual recall. Separate from the query hot path.
 
 **Tracing**
-Every request is traced end-to-end using DeepEval's `@observe` decorator — agent → retriever → reranker → LLM — visible in the Confident AI dashboard.
-
-**RAG evaluation**
-Pipeline evaluated using DeepEval with faithfulness, answer relevancy, contextual precision, and contextual recall metrics.
+Every query request is traced end-to-end using DeepEval's `@observe` decorator — agent → retriever → reranker → LLM — visible in the Confident AI dashboard.
 
 ---
 
 ## Tech Stack
 
-| Layer             | Technology                                            |
-| ----------------- | ----------------------------------------------------- |
-| Backend           | FastAPI (Python)                                      |
-| Vector DB         | Qdrant Cloud                                          |
-| Dense embeddings  | `all-MiniLM-L6-v2` (sentence-transformers)            |
-| Sparse embeddings | `Qdrant/bm42-all-minilm-l6-v2-attentions` (fastembed) |
-| Re-ranking        | `cross-encoder/ms-marco-MiniLM-L-6-v2`                |
-| AST parsing       | tree-sitter + tree-sitter-language-pack               |
-| LLM               | Gemini 2.5 Flash (Google AI Studio)                   |
-| Tracing           | DeepEval + Confident AI                               |
-| HTTP client       | httpx (async)                                         |
-| Frontend          | Next.js (coming soon)                                 |
+| Layer                | Technology                                            |
+| -------------------- | ----------------------------------------------------- |
+| API Server           | FastAPI (Python)                                      |
+| Job Queue            | ARQ + Redis                                           |
+| Vector DB            | Qdrant Cloud                                          |
+| Dense Embeddings     | `all-MiniLM-L6-v2` (sentence-transformers)            |
+| Sparse Embeddings    | `Qdrant/bm42-all-minilm-l6-v2-attentions` (fastembed) |
+| Re-ranking           | `cross-encoder/ms-marco-MiniLM-L-6-v2`                |
+| AST Parsing          | tree-sitter + tree-sitter-language-pack               |
+| LLM                  | Gemini 2.5 Flash (Google AI Studio)                   |
+| Tracing + Evaluation | DeepEval + Confident AI                               |
+| Async HTTP           | httpx                                                 |
+| Containerization     | Docker + Docker Compose                               |
 
 ---
 
@@ -67,26 +113,37 @@ Pipeline evaluated using DeepEval with faithfulness, answer relevancy, contextua
 
 ```
 gh-rag-app/
+├── docker-compose.yml
+├── README.md
+│
 ├── server/
-│   ├── main.py               # FastAPI app, lifespan, routes
-│   ├── constants.py          # Extensions, node types, config
+│   ├── main.py                  # FastAPI app, lifespan, routes
+│   ├── constants.py             # Extensions, node types, blocked dirs
+│   ├── worker.py                # ARQ worker settings + task
 │   ├── requirements.txt
+│   ├── Dockerfile
 │   ├── .env
 │   ├── core/
-│   │   ├── clients.py        # Qdrant, Gemini, embedding models
-│   │   ├── fetcher.py        # GitHub API — fetch repo file tree
-│   │   ├── chunker.py        # tree-sitter AST chunking
-│   │   ├── embedder.py       # Dense + sparse embeddings (parallel)
-│   │   ├── retriever.py      # Hybrid search, reranking, ask()
-│   │   ├── generator.py      # Prompt building + Gemini call
-│   │   └── indexer.py        # Full indexing pipeline
+│   │   ├── clients.py           # Qdrant, Gemini, Redis, ARQ pool
+│   │   ├── database.py          # Redis job state operations
+│   │   ├── fetcher.py           # GitHub API — fetch repo file tree
+│   │   ├── chunker.py           # tree-sitter AST chunking
+│   │   ├── embedder.py          # Calls embedding service, batched
+│   │   ├── embedding_client.py  # HTTP client for embedding service
+│   │   ├── retriever.py         # Hybrid search, reranking, ask()
+│   │   ├── generator.py         # Prompt building + Gemini call
+│   │   └── indexer.py           # Full indexing pipeline
 │   └── api/
-│       ├── models.py         # Pydantic request/response models
+│       ├── models.py            # Pydantic request/response models
 │       └── routes/
-│           ├── index.py      # POST /api/index, GET /api/index/{job_id}, DELETE /api/index
-│           └── query.py      # POST /api/query
-            └── evaluate.py   # POST /api/evaluate
-└── client/                   # Next.js frontend (coming soon)
+│           ├── index.py         # POST /api/index, GET, DELETE
+│           ├── query.py         # POST /api/query
+│           └── evaluate.py      # POST /api/evaluate
+│
+└── embedding_service/
+    ├── main.py                  # FastAPI embedding + rerank endpoints
+    ├── requirements.txt
+    └── Dockerfile
 ```
 
 ---
@@ -95,72 +152,132 @@ gh-rag-app/
 
 ### Prerequisites
 
-- Python 3.11+
-- A [Qdrant Cloud](https://cloud.qdrant.io) account (free tier works)
-- A [Google AI Studio](https://aistudio.google.com) API key
-- A [Confident AI](https://app.confident-ai.com) account for tracing (optional)
-- A GitHub personal access token (optional but recommended for higher rate limits)
+- Python 3.11
+- Docker Desktop (for Docker setup)
+- [Qdrant Cloud](https://cloud.qdrant.io) free cluster
+- [Google AI Studio](https://aistudio.google.com) API key
+- [Upstash Redis](https://upstash.com) free instance (or local Redis)
+- [Confident AI](https://app.confident-ai.com) account (optional, for tracing)
+- GitHub Personal Access Token (optional, for higher rate limits)
 
-### 1. Clone the repo
+---
+
+### Option 1 — Local (without Docker)
+
+**1. Clone the repo**
 
 ```bash
-git clone https://github.com/your-username/gh-rag-app.git
-cd gh-rag-app/server
+git clone https://github.com/kVarunkk/GitHub-Codebase-RAG.git
+cd GitHub-Codebase-RAG
 ```
 
-### 2. Create and activate a virtual environment
+**2. Set up server**
 
 ```bash
+cd server
 python -m venv venv
-
-# macOS/Linux
-source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-```
-
-### 3. Install dependencies
-
-```bash
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # Mac/Linux
 pip install -r requirements.txt
 ```
 
-### 4. Configure environment variables
+**3. Set up embedding service**
 
-Create a `.env` file in the `server/` directory:
+```bash
+cd ../embedding_service
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**4. Configure environment variables**
+
+Create `server/.env`:
 
 ```env
 QDRANT_URL=https://your-cluster.qdrant.io
 QDRANT_API_KEY=your-qdrant-api-key
 GOOGLE_API_KEY=your-ai-studio-api-key
-GITHUB_TOKEN=your-github-personal-access-token
-CONFIDENT_API_KEY=your-confident-ai-api-key
+GITHUB_TOKEN=your-github-pat
+REDIS_URL=redis://localhost:6379
+EMBEDDING_SERVICE_URL=http://localhost:8001
+CONFIDENT_API_KEY=your-confident-ai-key
 ```
 
-| Variable            | Required    | Description                                           |
-| ------------------- | ----------- | ----------------------------------------------------- |
-| `QDRANT_URL`        | Yes         | Your Qdrant Cloud cluster URL                         |
-| `QDRANT_API_KEY`    | Yes         | Qdrant Cloud API key                                  |
-| `GOOGLE_API_KEY`    | Yes         | Google AI Studio API key for Gemini                   |
-| `GITHUB_TOKEN`      | Recommended | GitHub PAT — raises rate limit from 60 to 5000 req/hr |
-| `CONFIDENT_API_KEY` | Optional    | Confident AI key for tracing dashboard                |
-
-### 5. Start the server
+**5. Run all three services in separate terminals**
 
 ```bash
-uvicorn main:app --reload
+# Terminal 1 — embedding service
+cd embedding_service && uvicorn main:app --port 8001 --reload
+
+# Terminal 2 — API server
+cd server && uvicorn main:app --port 8000 --reload
+
+# Terminal 3 — ARQ worker
+cd server && python -u -m arq worker.WorkerSettings
 ```
 
-Server runs at `http://localhost:8000`. Interactive API docs at `http://localhost:8000/docs`.
+---
+
+### Option 2 — Docker Compose
+
+**1. Clone the repo**
+
+```bash
+git clone https://github.com/kVarunkk/GitHub-Codebase-RAG.git
+cd GitHub-Codebase-RAG
+```
+
+**2. Configure environment variables**
+
+Create `server/.env` with the same variables as above, but update:
+
+```env
+REDIS_URL=redis://redis:6379
+EMBEDDING_SERVICE_URL=http://embedding:8001
+```
+
+**3. Build and run**
+
+```bash
+docker compose up --build
+```
+
+**4. Subsequent runs (no code changes)**
+
+```bash
+docker compose up
+```
+
+**5. Stop**
+
+```bash
+docker compose down
+```
+
+**View logs:**
+
+```bash
+docker compose logs -f          # all services
+docker compose logs -f worker   # worker only
+docker compose logs -f api      # api only
+```
 
 ---
 
 ## API Reference
 
+### `GET /health`
+
+```json
+{ "status": "ok" }
+```
+
+---
+
 ### `POST /api/index`
 
-Start indexing a GitHub repository.
+Start indexing a GitHub repository. Returns immediately — indexing runs in background.
 
 **Request:**
 
@@ -177,28 +294,7 @@ Start indexing a GitHub repository.
 {
   "job_id": "uuid",
   "status": "pending",
-  "message": "Indexing started for owner/repo"
-}
-```
-
----
-
-### `DELETE /api/index`
-
-Delete all indexed vectors for a specific repo.
-
-**Query param:** `repo=owner/repo`
-
-```bash
-curl -X DELETE "http://localhost:8000/api/index?repo=kVarunkk/GetHired-mcp-server"
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "message": "Deleted all points for kVarunkk/GetHired-mcp-server"
+  "message": "Indexing queued for owner/repo"
 }
 ```
 
@@ -206,26 +302,47 @@ curl -X DELETE "http://localhost:8000/api/index?repo=kVarunkk/GetHired-mcp-serve
 
 ### `GET /api/index/{job_id}`
 
-Poll indexing status.
+Poll indexing status and progress.
 
 **Response:**
 
 ```json
 {
   "job_id": "uuid",
-  "status": "done",
-  "message": "Successfully indexed owner/repo",
+  "status": "running",
+  "message": "Attempt 1",
   "progress": {
-    "total_files": 5,
-    "fetched_files": 4,
-    "chunked_files": 4,
-    "embedded_chunks": 20,
-    "stored_chunks": 20
+    "total_files": 333,
+    "fetched_files": 210,
+    "chunked_files": 210,
+    "embedded_chunks": 800,
+    "stored_chunks": 700
   }
 }
 ```
 
 Status values: `pending` | `running` | `done` | `failed`
+
+---
+
+### `DELETE /api/index?repo={owner/repo}`
+
+Delete all indexed vectors for a specific repo.
+
+**Example:**
+
+```bash
+curl -X DELETE "http://localhost:8000/api/index?repo=owner/repo"
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Deleted all points for owner/repo"
+}
+```
 
 ---
 
@@ -248,7 +365,7 @@ Ask a question about an indexed repository.
 
 ```json
 {
-  "answer": "Authentication uses bearer tokens validated by...",
+  "answer": "Authentication uses bearer tokens validated by requireBearerAuth middleware...",
   "citations": [
     {
       "path": "src/auth/middleware.ts",
@@ -263,7 +380,7 @@ Ask a question about an indexed repository.
 
 ### `POST /api/evaluate`
 
-Run RAG evaluation metrics on a question against an indexed repo. Slower than `/api/query` — intended for testing pipeline quality, not production use.
+Run RAG evaluation metrics on a question. Slower than `/api/query` — intended for pipeline quality testing only.
 
 **Request:**
 
@@ -271,7 +388,7 @@ Run RAG evaluation metrics on a question against an indexed repo. Slower than `/
 {
   "question": "How does authentication work?",
   "repo": "owner/repo",
-  "expected_answer": "optional ground truth for precision/recall metrics",
+  "expected_answer": "optional ground truth for precision/recall",
   "candidate_k": 20,
   "final_k": 5
 }
@@ -291,28 +408,41 @@ Run RAG evaluation metrics on a question against an indexed repo. Slower than `/
       "threshold": 0.7,
       "passed": true,
       "reason": "The answer directly addresses the question."
+    },
+    {
+      "name": "Faithfulness",
+      "score": 1.0,
+      "threshold": 0.7,
+      "passed": true,
+      "reason": "All claims are grounded in the retrieved chunks."
     }
   ],
   "confident_link": "https://app.confident-ai.com/..."
 }
 ```
 
-> Note: `ContextualPrecision` and `ContextualRecall` are only evaluated when `expected_answer` is provided.
+> `ContextualPrecision` and `ContextualRecall` are only evaluated when `expected_answer` is provided.
 
 ---
 
-### `GET /health`
+## Environment Variables
 
-```json
-{ "status": "ok" }
-```
+| Variable                | Required    | Description                                           |
+| ----------------------- | ----------- | ----------------------------------------------------- |
+| `QDRANT_URL`            | Yes         | Qdrant Cloud cluster URL                              |
+| `QDRANT_API_KEY`        | Yes         | Qdrant Cloud API key                                  |
+| `GOOGLE_API_KEY`        | Yes         | Google AI Studio key for Gemini                       |
+| `REDIS_URL`             | Yes         | Redis connection URL                                  |
+| `EMBEDDING_SERVICE_URL` | Yes         | URL of the embedding service                          |
+| `GITHUB_TOKEN`          | Recommended | GitHub PAT — raises rate limit from 60 to 5000 req/hr |
+| `CONFIDENT_API_KEY`     | Optional    | Confident AI key for tracing dashboard                |
 
 ---
 
 ## Roadmap
 
-- [ ] Next.js frontend with chat UI and clickable citation cards
-- [ ] Streaming LLM responses
-- [ ] Idempotent re-indexing (skip unchanged files using content hashing)
-- [ ] Metadata filtering by file path or language
+- [ ] Streaming LLM responses (Server-Sent Events)
+- [ ] Metadata filtering by file path or language at query time
 - [ ] Support for private repositories
+- [ ] Switch to `BAAI/bge-base-en-v1.5` for better code embedding quality
+- [ ] tree-sitter upgrade to v0.23+ with individual language packages
