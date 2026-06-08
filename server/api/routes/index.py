@@ -46,6 +46,31 @@ async def index_repo(body: IndexRequest):
     )
 
 
+@router.get("/index/repos")
+async def get_unique_indexed_repos(limit: int = 1000):
+    """
+    Returns a list of all unique repository identifiers that have been
+    successfully chunked and stored inside the vector database.
+    """
+    try:
+        facet_response = await get_qdrant().facet(
+            collection_name=COLLECTION_NAME,
+            key="repo",
+            limit=limit
+        )
+        unique_repos = [hit.value for hit in facet_response.hits]
+        
+        return {
+            "success": True,
+            "repos": unique_repos,
+            "count": len(unique_repos)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to aggregate indexed repositories: {str(e)}"
+        )
+
 @router.get("/index/{job_id}", response_model=IndexStatusResponse)
 async def get_index_status(job_id: str):
     job = await get_job(job_id)
@@ -60,7 +85,6 @@ async def get_index_status(job_id: str):
     )
 
 
-# api/routes/index.py
 @router.delete("/index")
 async def delete_repo_index(repo: str):
     # repo = "kVarunkk/GetHired-mcp-server"
