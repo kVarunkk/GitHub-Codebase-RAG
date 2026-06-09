@@ -325,6 +325,22 @@ Status values: `pending` | `running` | `done` | `failed`
 
 ---
 
+### `GET /api/index/repos`
+
+Returns a list of all unique repository identifiers that have been successfully chunked and stored inside the vector database.
+
+**Response:**
+
+```json
+{
+  "success": "true",
+  "repos": ["repo1", "repo2", ...],
+  "count": 5
+}
+```
+
+---
+
 ### `DELETE /api/index?repo={owner/repo}`
 
 Delete all indexed vectors for a specific repo.
