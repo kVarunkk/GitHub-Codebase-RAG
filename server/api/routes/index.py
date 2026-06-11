@@ -4,7 +4,8 @@ import uuid
 from core.clients import get_arq_pool, get_qdrant
 from qdrant_client.models import Filter, FieldCondition, MatchValue, FilterSelector
 from constants import COLLECTION_NAME
-from core.database import create_job, get_job
+from core.database import create_job, get_job, update_job_status
+import time
 
 router = APIRouter()
 
@@ -84,6 +85,25 @@ async def get_index_status(job_id: str):
         progress=IndexProgress(**job["progress"]) if job.get("progress") else None
     )
 
+@router.post("/index/{job_id}/retry")
+async def retry_job(job_id: str):
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] != IndexStatus.FAILED:
+        raise HTTPException(status_code=400, detail="Only failed jobs can be retried")
+
+    owner, repo = job["repo"].split("/", 1)
+    await update_job_status(job_id, IndexStatus.PENDING, message="Manually retried")
+
+    pool = await get_arq_pool()
+    await pool.enqueue_job(
+        "index_repo_task",
+        job_id, owner, repo, "main",
+        _job_id=f"{job_id}-retry-{int(time.time())}"
+    )
+
+    return {"success": True, "message": f"Retried job {job_id}"}
 
 @router.delete("/index")
 async def delete_repo_index(repo: str):

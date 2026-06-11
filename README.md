@@ -341,6 +341,21 @@ Returns a list of all unique repository identifiers that have been successfully 
 
 ---
 
+### `POST /api/index/{job_id}/retry`
+
+Retires failed job.
+
+**Response:**
+
+```json
+{
+  "success": "true",
+  "message": "Retired job 12fewgrg32-gerg32-gre"
+}
+```
+
+---
+
 ### `DELETE /api/index?repo={owner/repo}`
 
 Delete all indexed vectors for a specific repo.
